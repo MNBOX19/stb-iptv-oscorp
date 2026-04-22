@@ -140,13 +140,17 @@
             padding: 8px; 
             margin: 0;
             position: relative;
-            transition: border-color 0.15s;
-            /* OTIMIZAÇÃO CRÍTICA: Desliga o processamento do que está fora da tela */
+            
+            /* OTIMIZAÇÃO CRÍTICA (GPU + Desliga itens invisíveis) */
             content-visibility: auto; 
             contain-intrinsic-size: 12.5vw 25vw;
+            backface-visibility: hidden;
+            transform: translateZ(0);
+            will-change: border-color, background;
+            transition: border-color 0.15s, background 0.15s;
         }
         #item-list.flex-layout .item.focused { 
-            transform: none !important; 
+            transform: translateZ(0) !important; /* Mantém na Placa de Vídeo (GPU) */
             border-color: #fff !important; /* Borda Branca estilo Smarters */
             z-index: 2; 
             background: #1a1a1a !important; 
@@ -437,6 +441,7 @@
             cfg: { filter: false, format: 'ts_native', lang: 'pt' }, userInfo: null, lastEnter: 0,
             categoryDataCache: null, showingEpisodes: false, lastScreenSwitch: 0,
             seriesDataCache: null, lastSeriesIdx: 0, lastTap: 0, tapTimer: null,
+            lastFocusedEl: null, // Sistema de Memória de Foco
             
             activeReqs: { count: null, cat: null, content: null, ep: null, search: null },
             
@@ -898,23 +903,48 @@
                 if(this.zone===0) { this.setScr(1); return; }
             },
             
+            // OTIMIZAÇÃO EXTREMA: SISTEMA DE MEMÓRIA DE FOCO E SCROLL DIRETO
             updateFocus: function() {
-                var focusedItems = document.querySelectorAll('.focused'); for(var k=0; k<focusedItems.length; k++) { focusedItems[k].classList.remove('focused'); }
-                var el; if(this.scr===0) el=document.getElementById('i'+this.idx); if(this.scr===1) el=document.getElementById('m'+this.idx); if(this.scr===3) el=document.getElementById('s'+this.idx);
-                if(this.scr===2) { if(this.zone===0) el=document.getElementById('c'+this.idx); if(this.zone===1) el=document.getElementById('search'); if(this.zone===2) el=document.getElementById('row-'+this.idx); if(this.zone===3) el=document.getElementById('vid-box'); }
+                // Em vez de varrer a tela inteira, ele só apaga do último focado
+                if (this.lastFocusedEl) {
+                    this.lastFocusedEl.classList.remove('focused');
+                } else {
+                    var focusedItems = document.querySelectorAll('.focused'); 
+                    for(var k=0; k<focusedItems.length; k++) { focusedItems[k].classList.remove('focused'); }
+                }
+
+                var el; 
+                if(this.scr===0) el=document.getElementById('i'+this.idx); 
+                if(this.scr===1) el=document.getElementById('m'+this.idx); 
+                if(this.scr===3) el=document.getElementById('s'+this.idx);
+                if(this.scr===2) { 
+                    if(this.zone===0) el=document.getElementById('c'+this.idx); 
+                    if(this.zone===1) el=document.getElementById('search'); 
+                    if(this.zone===2) el=document.getElementById('row-'+this.idx); 
+                    if(this.zone===3) el=document.getElementById('vid-box'); 
+                }
                 
                 if(el) { 
                     el.classList.add('focused'); 
-                    if(el.tagName==='INPUT') { try { el.focus({preventScroll:true}); } catch(e) { el.focus(); } } 
-                    else { var inps = document.querySelectorAll('input'); for(var i=0; i<inps.length; i++) { inps[i].blur(); } if (document.activeElement && document.activeElement !== document.body) { try { document.activeElement.blur(); } catch(e) {} } } 
+                    this.lastFocusedEl = el; // Salva para o próximo clique
+                    
+                    if(el.tagName==='INPUT') { 
+                        try { el.focus({preventScroll:true}); } catch(e) { el.focus(); } 
+                    } else { 
+                        var inps = document.querySelectorAll('input'); 
+                        for(var i=0; i<inps.length; i++) { inps[i].blur(); } 
+                        if (document.activeElement && document.activeElement !== document.body) { try { document.activeElement.blur(); } catch(e) {} } 
+                    } 
                     
                     if(el.tagName!=='INPUT') {
                         var parentContainer = el.parentElement;
                         while(parentContainer && parentContainer !== document.body) {
                             var style = window.getComputedStyle(parentContainer);
                             if(style.overflowY === 'auto' || style.overflowY === 'scroll') {
-                                try { parentContainer.scrollTo({ top: el.offsetTop - (parentContainer.clientHeight / 2) + (el.clientHeight / 2), behavior: 'smooth' }); } 
-                                catch(e) { parentContainer.scrollTop = el.offsetTop - (parentContainer.clientHeight / 2) + (el.clientHeight / 2); } break;
+                                // Scroll Rápido e Direto (sem smooth que trava a TV)
+                                var scrollPos = el.offsetTop - (parentContainer.clientHeight / 2) + (el.clientHeight / 2);
+                                parentContainer.scrollTop = scrollPos;
+                                break;
                             }
                             parentContainer = parentContainer.parentElement;
                         }
@@ -1011,7 +1041,15 @@
             }
         };
 
+        // OTIMIZAÇÃO EXTREMA: TRAVA ANTI-CRASH DO CONTROLE REMOTO
+        var isKeyLocked = false; 
+
         document.addEventListener('keydown', function(e) {
+            // Se o processador estiver ocupado, ignora a nova tecla até libertar (previne crash ao segurar botão)
+            if (isKeyLocked) { e.preventDefault(); return; }
+            isKeyLocked = true;
+            setTimeout(function() { isKeyLocked = false; }, 40);
+
             var k = e.keyCode;
             
             var isLeft = (k===37);
